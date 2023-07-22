@@ -1,0 +1,154 @@
+#!/bin/bash
+
+#
+# Assumptions:
+#  1) User has partitioned, formatted, and mounted partitions on /mnt
+#  2) Network is functional
+#  3) Arguments passed to the script are valid kepler targets
+#  4) A valid mirror appears in /etc/kepler.d/mirrorlist
+#
+
+shopt -s extglob
+
+m4_include(common)
+
+hostcache=0
+copykeyring=1
+initkeyring=0
+copymirrorlist=1
+kepler_args=()
+keplermode=-Sy
+setup=chroot_setup
+unshare=0
+copyconf=0
+kepler_config=/etc/kepler.conf
+
+usage() {
+  cat <<EOF
+usage: ${0##*/} [options] root [packages...]
+
+  Options:
+    -C <config>    Use an alternate config file for kepler
+    -c             Use the package cache on the host, rather than the target
+    -D             Skip kepler dependency checks
+    -G             Avoid copying the host's kepler keyring to the target
+    -i             Prompt for package confirmation when needed (run interactively)
+    -K             Initialize an empty kepler keyring in the target (implies '-G')
+    -M             Avoid copying the host's mirrorlist to the target
+    -N             Run in unshare mode as a regular user
+    -P             Copy the host's kepler config to the target
+    -U             Use kepler -U to install packages
+
+    -h             Print this help message
+
+base-strap installs packages to the specified new root directory. If no packages
+are given, base-strap defaults to the "base" group.
+
+EOF
+}
+
+if [[ -z $1 || $1 = @(-h|--help) ]]; then
+  usage
+  exit $(( $# ? 0 : 1 ))
+fi
+
+while getopts ':C:cDGiKMNPU' flag; do
+  case $flag in
+    C)
+      kepler_config=$OPTARG
+      ;;
+    D)
+      kepler_args+=(-dd)
+      ;;
+    c)
+      hostcache=1
+      ;;
+    i)
+      interactive=1
+      ;;
+    G)
+      copykeyring=0
+      ;;
+    K)
+      initkeyring=1
+      ;;
+    M)
+      copymirrorlist=0
+      ;;
+    N)
+      setup=unshare_setup
+      unshare=1
+      ;;
+    P)
+      copyconf=1
+      ;;
+    U)
+      keplermode=-U
+      ;;
+    :)
+      die '%s: option requires an argument -- '\''%s'\' "${0##*/}" "$OPTARG"
+      ;;
+    ?)
+      die '%s: invalid option -- '\''%s'\' "${0##*/}" "$OPTARG"
+      ;;
+  esac
+done
+shift $(( OPTIND - 1 ))
+
+(( $# )) || die "No root directory specified"
+newroot=$1; shift
+kepler_args+=("$keplermode" "${@:-base}" --config="$kepler_config")
+
+if (( ! hostcache )); then
+  kepler_args+=(--cachedir="$newroot/var/cache/kepler/pkg")
+fi
+
+if (( ! interactive )); then
+  kepler_args+=(--noconfirm)
+fi
+
+[[ -d $newroot ]] || die "%s is not a directory" "$newroot"
+
+base-strap() {
+  (( EUID == 0 )) || die 'This script must be run with root privileges'
+
+  # create obligatory directories
+  msg 'Creating install root at %s' "$newroot"
+  mkdir -m 0755 -p "$newroot"/var/{cache/kepler/pkg,lib/kepler,log} "$newroot"/{dev,run,etc/kepler.d}
+  mkdir -m 1777 -p "$newroot"/tmp
+  mkdir -m 0555 -p "$newroot"/{sys,proc}
+
+  # mount API filesystems
+  $setup "$newroot" || die "failed to setup chroot %s" "$newroot"
+
+  if [[ ! -d $newroot/etc/kepler.d/gnupg ]]; then
+    if (( initkeyring )); then
+      kepler-key --gpgdir "$newroot"/etc/kepler.d/gnupg --init
+    elif (( copykeyring )) && [[ -d /etc/kepler.d/gnupg ]]; then
+      # if there's a keyring on the host, copy it into the new root
+      cp -a --no-preserve=ownership /etc/kepler.d/gnupg "$newroot/etc/kepler.d/"
+    fi
+  fi
+
+  msg 'Installing packages to %s' "$newroot"
+  if ! $pid_unshare kepler -r "$newroot" "${kepler_args[@]}"; then
+    die 'Failed to install packages to new root'
+  fi
+
+  if (( copymirrorlist )); then
+    # install the host's mirrorlist onto the new root
+    cp -a /etc/kepler.d/mirrorlist "$newroot/etc/kepler.d/"
+  fi
+
+  if (( copyconf )); then
+    cp -a "$kepler_config" "$newroot/etc/kepler.conf"
+  fi
+}
+
+if (( unshare )); then
+  $mount_unshare bash -c "$(declare_all); base-strap"
+else
+  base-strap
+fi
+
+# vim: et ts=2 sw=2 ft=sh:
