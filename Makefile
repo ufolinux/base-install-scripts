@@ -7,15 +7,10 @@ BINPROGS = \
 	genfstab \
 	base-strap
 
-MANS = \
-	doc/base-chroot.8 \
-	doc/genfstab.8 \
-	doc/base-strap.8
 
 BASH = bash
 
-all: $(BINPROGS) man
-man: $(MANS)
+all: $(BINPROGS)
 
 V_GEN = $(_v_GEN_$(V))
 _v_GEN_ = $(_v_GEN_0)
@@ -26,11 +21,8 @@ edit = $(V_GEN) m4 -P $@.in >$@ && chmod go-w,+x $@
 %: %.in common
 	$(edit)
 
-doc/%: doc/%.asciidoc doc/asciidoc.conf doc/footer.asciidoc
-	$(V_GEN) a2x --no-xmllint --asciidoc-opts="-f doc/asciidoc.conf" -d manpage -f manpage -D doc $<
-
 clean:
-	$(RM) $(BINPROGS) $(MANS)
+	$(RM) $(BINPROGS)
 
 check: all
 	@for f in $(BINPROGS); do bash -O extglob -n $$f; done
@@ -42,9 +34,6 @@ install: all
 	install -Dm644 completion/_baseinstallscripts.zsh $(DESTDIR)$(PREFIX)/share/zsh/site-functions/_baseinstallscripts
 	cd completion; for comp in *.bash; do \
 		install -Dm644 $$comp $(DESTDIR)$(PREFIX)/share/bash-completion/completions/$${comp%%.*}; \
-	done;
-	for manfile in $(MANS); do \
-		install -Dm644 $$manfile -t $(DESTDIR)$(PREFIX)/share/man/man$${manfile##*.}; \
 	done;
 
 .PHONY: all clean install uninstall
